@@ -1,88 +1,77 @@
 import sys
 import os
 import sqlparse
+import difflib
 
 def read_file(filepath):
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         return f.read()
 
-def split_statements(sql_text):
-    # Use sqlparse for robust splitting
-    return [str(stmt).strip() for stmt in sqlparse.parse(sql_text) if str(stmt).strip()]
+def format_sql(sql_text):
+    # Format SQL for consistent comparison
+    return sqlparse.format(sql_text, reindent=True, keyword_case='upper')
 
-def write_file(filepath, statements):
+def write_file(filepath, lines):
+    # Write lines, removing consecutive blank lines
     with open(filepath, 'w', encoding='utf-8', errors='ignore') as f:
-        for stmt in statements:
-            f.write(stmt.strip() + '\n\n')
+        prev_blank = False
+        for line in lines:
+            if line.strip() == '':
+                if not prev_blank:
+                    f.write('\n')
+                prev_blank = True
+            else:
+                f.write(line.rstrip() + '\n')
+                prev_blank = False
 
 def generate_diff_report(file1, file2, report_file):
-    stmts1 = split_statements(read_file(file1))
-    stmts2 = split_statements(read_file(file2))
+    sql1 = format_sql(read_file(file1))
+    sql2 = format_sql(read_file(file2))
+    lines1 = sql1.splitlines()
+    lines2 = sql2.splitlines()
 
-    set1 = set(stmts1)
-    set2 = set(stmts2)
-
-    added = [stmt for stmt in stmts2 if stmt not in set1]
-    removed = [stmt for stmt in stmts1 if stmt not in set2]
-    common = [stmt for stmt in stmts1 if stmt in set2]
+    diff = list(difflib.ndiff(lines1, lines2))
 
     with open(report_file, 'w', encoding='utf-8', errors='ignore') as f:
-        f.write(f"=== Statements only in {os.path.basename(file2)} (ADDED): ===\n\n")
-        for stmt in added:
-            f.write(stmt + '\n\n')
-        f.write(f"\n=== Statements only in {os.path.basename(file1)} (REMOVED): ===\n\n")
-        for stmt in removed:
-            f.write(stmt + '\n\n')
-        f.write(f"\n=== Statements in BOTH files: ===\n\n")
-        for stmt in common:
-            f.write(stmt + '\n\n')
-    print(f"Diff report written to {report_file}")
+        for line in diff:
+            if line.startswith('- '):
+                f.write(f"REMOVED: {line[2:]}\n")
+            elif line.startswith('+ '):
+                f.write(f"ADDED:   {line[2:]}\n")
+            elif line.startswith('? '):
+                # This line shows detailed char-level changes, can skip or keep for debugging
+                continue
+            else:
+                f.write(f"        {line[2:]}\n")
+    print(f"Readable diff report written to {report_file}")
 
-def merge_files_accept_all_from_second(file1, file2, output_file):
-    stmts1 = split_statements(read_file(file1))
-    stmts2 = split_statements(read_file(file2))
-    merged = stmts2[:]
-    for stmt in stmts1:
-        if stmt not in merged:
-            merged.append(stmt)
+def merge_files_line_by_line(file1, file2, output_file):
+    sql1 = format_sql(read_file(file1))
+    sql2 = format_sql(read_file(file2))
+    lines1 = sql1.splitlines()
+    lines2 = sql2.splitlines()
+
+    # Use difflib to merge only the changed lines
+    merged = []
+    sm = difflib.SequenceMatcher(None, lines1, lines2)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == 'equal':
+            merged.extend(lines1[i1:i2])
+        elif tag == 'replace':
+            merged.extend(lines2[j1:j2])
+        elif tag == 'delete':
+            # Optionally, skip or keep deletions
+            pass
+        elif tag == 'insert':
+            merged.extend(lines2[j1:j2])
     write_file(output_file, merged)
     print(f"Merged file written to {output_file}")
-
-def interactive_merge(file1, file2, output_file):
-    stmts1 = split_statements(read_file(file1))
-    stmts2 = split_statements(read_file(file2))
-
-    set1 = set(stmts1)
-    set2 = set(stmts2)
-
-    merged = []
-    # Add all statements from file1, ask about conflicts
-    for stmt in stmts1:
-        if stmt in set2:
-            merged.append(stmt)
-        else:
-            print("\nStatement only in first file:\n")
-            print(stmt)
-            choice = input("Keep this statement? (y/n): ").strip().lower()
-            if choice == 'y':
-                merged.append(stmt)
-    # Add statements only in file2
-    for stmt in stmts2:
-        if stmt not in set1:
-            print("\nStatement only in second file:\n")
-            print(stmt)
-            choice = input("Add this statement? (y/n): ").strip().lower()
-            if choice == 'y':
-                merged.append(stmt)
-    write_file(output_file, merged)
-    print(f"Interactive merge complete. Output written to {output_file}")
 
 if __name__ == "__main__":
     if len(sys.argv) < 4:
         print("Usage:")
         print("  python compare_and_merge_sql.py compare <file1.sql> <file2.sql>")
         print("  python compare_and_merge_sql.py merge <file1.sql> <file2.sql> <output.sql>")
-        print("  python compare_and_merge_sql.py interactive-merge <file1.sql> <file2.sql> <output.sql>")
         sys.exit(1)
 
     mode = sys.argv[1].lower()
@@ -97,12 +86,6 @@ if __name__ == "__main__":
             print("Please specify output file for merge.")
             sys.exit(1)
         output_file = sys.argv[4]
-        merge_files_accept_all_from_second(file1, file2, output_file)
-    elif mode == "interactive-merge":
-        if len(sys.argv) < 5:
-            print("Please specify output file for interactive merge.")
-            sys.exit(1)
-        output_file = sys.argv[4]
-        interactive_merge(file1, file2, output_file)
+        merge_files_line_by_line(file1, file2, output_file)
     else:
-        print("Unknown mode. Use 'compare', 'merge', or 'interactive-merge'.")
+        print("Unknown mode. Use 'compare' or 'merge'.")

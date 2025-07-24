@@ -1,8 +1,8 @@
-# app.py
 from flask import Flask, request, jsonify, send_file
 import tempfile
 import os
 import sqlparse
+import difflib
 
 app = Flask(__name__)
 
@@ -10,67 +10,82 @@ def read_file(filepath):
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
         return f.read()
 
-def split_statements(sql_text):
-    return [str(stmt).strip() for stmt in sqlparse.parse(sql_text) if str(stmt).strip()]
+def format_sql(sql_text):
+    # Format SQL for consistent comparison
+    return sqlparse.format(sql_text, reindent=True, keyword_case='upper')
 
-def write_file(filepath, statements):
+def write_file(filepath, lines):
+    # Write lines, removing consecutive blank lines
     with open(filepath, 'w', encoding='utf-8', errors='ignore') as f:
-        for stmt in statements:
-            f.write(stmt.strip() + '\n\n')
+        prev_blank = False
+        for line in lines:
+            if line.strip() == '':
+                if not prev_blank:
+                    f.write('\n')
+                prev_blank = True
+            else:
+                f.write(line.rstrip() + '\n')
+                prev_blank = False
 
-def generate_diff_report(file1, file2, report_file):
-    stmts1 = split_statements(read_file(file1))
-    stmts2 = split_statements(read_file(file2))
+def generate_diff_report(file1, file2):
+    sql1 = format_sql(read_file(file1))
+    sql2 = format_sql(read_file(file2))
+    lines1 = sql1.splitlines()
+    lines2 = sql2.splitlines()
 
-    set1 = set(stmts1)
-    set2 = set(stmts2)
+    diff = list(difflib.ndiff(lines1, lines2))
+    report_lines = []
+    for line in diff:
+        if line.startswith('- '):
+            report_lines.append(f"REMOVED: {line[2:]}")
+        elif line.startswith('+ '):
+            report_lines.append(f"ADDED:   {line[2:]}")
+        elif line.startswith('? '):
+            continue
+        else:
+            report_lines.append(f"        {line[2:]}")
+    return '\n'.join(report_lines)
 
-    added = [stmt for stmt in stmts2 if stmt not in set1]
-    removed = [stmt for stmt in stmts1 if stmt not in set2]
-    common = [stmt for stmt in stmts1 if stmt in set2]
+def merge_files_line_by_line(file1, file2, output_file):
+    sql1 = format_sql(read_file(file1))
+    sql2 = format_sql(read_file(file2))
+    lines1 = sql1.splitlines()
+    lines2 = sql2.splitlines()
 
-    with open(report_file, 'w', encoding='utf-8', errors='ignore') as f:
-        f.write(f"=== Statements only in {os.path.basename(file2)} (ADDED): ===\n\n")
-        for stmt in added:
-            f.write(stmt + '\n\n')
-        f.write(f"\n=== Statements only in {os.path.basename(file1)} (REMOVED): ===\n\n")
-        for stmt in removed:
-            f.write(stmt + '\n\n')
-        f.write(f"\n=== Statements in BOTH files: ===\n\n")
-        for stmt in common:
-            f.write(stmt + '\n\n')
-
-def merge_files_accept_all_from_second(file1, file2, output_file):
-    stmts1 = split_statements(read_file(file1))
-    stmts2 = split_statements(read_file(file2))
-    merged = stmts2[:]
-    for stmt in stmts1:
-        if stmt not in merged:
-            merged.append(stmt)
+    merged = []
+    sm = difflib.SequenceMatcher(None, lines1, lines2)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == 'equal':
+            merged.extend(lines1[i1:i2])
+        elif tag == 'replace':
+            merged.extend(lines2[j1:j2])
+        elif tag == 'delete':
+            pass
+        elif tag == 'insert':
+            merged.extend(lines2[j1:j2])
     write_file(output_file, merged)
 
 @app.route('/compare', methods=['POST'])
 def compare():
+    if 'file1' not in request.files or 'file2' not in request.files:
+        return jsonify({'error': 'Both file1 and file2 are required.'}), 400
     file1 = request.files['file1']
     file2 = request.files['file2']
     with tempfile.NamedTemporaryFile(delete=False, suffix='.sql') as f1, \
-         tempfile.NamedTemporaryFile(delete=False, suffix='.sql') as f2, \
-         tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as report:
+         tempfile.NamedTemporaryFile(delete=False, suffix='.sql') as f2:
         f1.write(file1.read())
         f2.write(file2.read())
         f1.close()
         f2.close()
-        report.close()
-        generate_diff_report(f1.name, f2.name, report.name)
-        with open(report.name, 'r', encoding='utf-8', errors='ignore') as rf:
-            report_content = rf.read()
+        report = generate_diff_report(f1.name, f2.name)
         os.unlink(f1.name)
         os.unlink(f2.name)
-        os.unlink(report.name)
-    return jsonify({'report': report_content})
+    return jsonify({'report': report})
 
 @app.route('/merge', methods=['POST'])
 def merge():
+    if 'file1' not in request.files or 'file2' not in request.files:
+        return jsonify({'error': 'Both file1 and file2 are required.'}), 400
     file1 = request.files['file1']
     file2 = request.files['file2']
     with tempfile.NamedTemporaryFile(delete=False, suffix='.sql') as f1, \
@@ -81,9 +96,8 @@ def merge():
         f1.close()
         f2.close()
         merged.close()
-        merge_files_accept_all_from_second(f1.name, f2.name, merged.name)
+        merge_files_line_by_line(f1.name, f2.name, merged.name)
         response = send_file(merged.name, as_attachment=True, download_name='merged.sql')
-        # Clean up after sending
         @response.call_on_close
         def cleanup():
             os.unlink(f1.name)
