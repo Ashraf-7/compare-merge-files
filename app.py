@@ -5,6 +5,7 @@ import sqlparse
 import difflib
 
 app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32 MB upload limit
 
 def read_file(filepath):
     with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
@@ -67,6 +68,7 @@ def merge_files_line_by_line(file1, file2, output_file):
 
 @app.route('/compare', methods=['POST'])
 def compare():
+    print('Request files:', request.files)
     if 'file1' not in request.files or 'file2' not in request.files:
         return jsonify({'error': 'Both file1 and file2 are required.'}), 400
     file1 = request.files['file1']
@@ -84,6 +86,7 @@ def compare():
 
 @app.route('/merge', methods=['POST'])
 def merge():
+    print('Request files:', request.files)
     if 'file1' not in request.files or 'file2' not in request.files:
         return jsonify({'error': 'Both file1 and file2 are required.'}), 400
     file1 = request.files['file1']
@@ -110,4 +113,4 @@ def index():
     return "SQL Compare/Merge API is running."
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=3001)
+    app.run(host='0.0.0.0', port=3001, debug=True)
