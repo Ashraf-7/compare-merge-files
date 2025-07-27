@@ -3,6 +3,7 @@ import tempfile
 import os
 import sqlparse
 import difflib
+import base64
 
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32 MB upload limit
@@ -68,7 +69,7 @@ def merge_files_line_by_line(file1, file2, output_file):
 
 @app.route('/compare', methods=['POST'])
 def compare():
-    print('Request files:', request.files)
+    app.logger.info('Request files: %s', request.files)
     if 'file1' not in request.files or 'file2' not in request.files:
         return jsonify({'error': 'Both file1 and file2 are required.'}), 400
     file1 = request.files['file1']
@@ -77,6 +78,27 @@ def compare():
          tempfile.NamedTemporaryFile(delete=False, suffix='.sql') as f2:
         f1.write(file1.read())
         f2.write(file2.read())
+        f1.close()
+        f2.close()
+        report = generate_diff_report(f1.name, f2.name)
+        os.unlink(f1.name)
+        os.unlink(f2.name)
+    return jsonify({'report': report})
+
+@app.route('/compare_base64', methods=['POST'])
+def compare_base64():
+    data = request.get_json()
+    if not data or 'file1' not in data or 'file2' not in data:
+        return jsonify({'error': 'Both file1 and file2 are required.'}), 400
+    try:
+        file1_content = base64.b64decode(data['file1'])
+        file2_content = base64.b64decode(data['file2'])
+    except Exception as e:
+        return jsonify({'error': f'Base64 decode error: {str(e)}'}), 400
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.sql') as f1, \
+         tempfile.NamedTemporaryFile(delete=False, suffix='.sql') as f2:
+        f1.write(file1_content)
+        f2.write(file2_content)
         f1.close()
         f2.close()
         report = generate_diff_report(f1.name, f2.name)
