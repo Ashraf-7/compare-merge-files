@@ -130,6 +130,34 @@ def merge():
             os.unlink(merged.name)
         return response
 
+@app.route('/merge_base64', methods=['POST'])
+def merge_base64():
+    
+    data = request.get_json()
+    if not data or 'file1' not in data or 'file2' not in data:
+        return jsonify({'error': 'Both file1 and file2 are required.'}), 400
+    try:
+        file1_content = base64.b64decode(data['file1'])
+        file2_content = base64.b64decode(data['file2'])
+    except Exception as e:
+        return jsonify({'error': f'Base64 decode error: {str(e)}'}), 400
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.sql') as f1, \
+         tempfile.NamedTemporaryFile(delete=False, suffix='.sql') as f2, \
+         tempfile.NamedTemporaryFile(delete=False, suffix='.sql') as merged:
+        f1.write(file1_content)
+        f2.write(file2_content)
+        f1.close()
+        f2.close()
+        merged.close()
+        merge_files_line_by_line(f1.name, f2.name, merged.name)
+        response = send_file(merged.name, as_attachment=True, download_name='merged.sql')
+        @response.call_on_close
+        def cleanup():
+            os.unlink(f1.name)
+            os.unlink(f2.name)
+            os.unlink(merged.name)
+    return response
+
 @app.route('/')
 def index():
     return "SQL Compare/Merge API is running."
